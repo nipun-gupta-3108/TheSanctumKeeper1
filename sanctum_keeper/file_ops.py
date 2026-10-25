@@ -65,7 +65,14 @@ def _signature_at(path: Path) -> FileSignature:
         sha256=digest.hexdigest(),
     )
 
+def inspect_file_signature(path: str | Path) -> FileSignature:
+    """
+    Read-only inspection of an existing regular file.
 
+    This does not authorize or perform filesystem mutations.
+    """
+    return _signature_at(Path(path).expanduser())
+    
 def compute_file_signature(
     path: str | Path,
     policy: SafetyPolicy | None = None,
