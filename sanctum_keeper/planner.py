@@ -38,6 +38,8 @@ class PlanItem:
     actions: tuple[PlannedAction, ...]
     status: PlanStatus
     reason: str | None = None
+    source_size: int | None = None
+    source_modified_at: float | None = None
 
     @property
     def final_path(self) -> Path:
@@ -266,6 +268,8 @@ def plan_file(
             if not planned_actions
             else None
         ),
+        source_size=file.size_bytes,
+        source_modified_at=file.modified_at,
     )
 
 
