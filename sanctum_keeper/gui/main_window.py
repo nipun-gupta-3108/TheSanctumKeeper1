@@ -18,7 +18,16 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
+from PySide6.QtWidgets import (
+    QHeaderView,
+    QTableWidget,
+    QTableWidgetItem,
+)
 
+from sanctum_keeper.executor import execute_plans
+from sanctum_keeper.file_ops import default_quarantine_dir
+from sanctum_keeper.planner import PlanStatus, plan_files
+from sanctum_keeper.scanner import scan_folders
 from sanctum_keeper.database import KeeperDatabase
 from sanctum_keeper.safety import (
     PathValidationError,
@@ -41,6 +50,7 @@ class MainWindow(QMainWindow):
         self._build_ui()
         self.refresh_folders()
         self.refresh_rules()
+        self.refresh_history()
 
     def _build_ui(self):
         central = QWidget()
@@ -100,21 +110,9 @@ class MainWindow(QMainWindow):
         # Temporary placeholders for later implementation
         self.tabs.addTab(self._build_rules_page(), "Rules")
 
-        self.tabs.addTab(
-            self._placeholder(
-                "Operation Preview",
-                "Dry-run preview will be added next.",
-            ),
-            "Preview",
-        )
+        self.tabs.addTab(self._build_preview_page(), "Preview")
 
-        self.tabs.addTab(
-            self._placeholder(
-                "Operation History",
-                "SQLite operation history will be added next.",
-            ),
-            "History",
-        )
+        self.tabs.addTab(self._build_history_page(), "History")
 
         self.setCentralWidget(central)
 
@@ -436,3 +434,343 @@ class MainWindow(QMainWindow):
         )
 
         self._persist_rules(rules, new_index)
+    
+    def _build_preview_page(self):
+        page = QWidget()
+        layout = QVBoxLayout(page)
+
+        layout.addWidget(
+            QLabel(
+                "Review planned file operations before execution. "
+                "Building a preview does not modify files."
+            )
+        )
+
+        buttons = QHBoxLayout()
+
+        self.build_preview_button = QPushButton("Build Preview")
+        self.execute_preview_button = QPushButton(
+            "Confirm and Execute"
+        )
+
+        self.execute_preview_button.setEnabled(False)
+
+        self.build_preview_button.clicked.connect(
+            self.build_preview
+        )
+        self.execute_preview_button.clicked.connect(
+            self.execute_preview
+        )
+
+        buttons.addWidget(self.build_preview_button)
+        buttons.addWidget(self.execute_preview_button)
+
+        layout.addLayout(buttons)
+
+        self.preview_table = QTableWidget(0, 6)
+        self.preview_table.setHorizontalHeaderLabels(
+            [
+                "Source",
+                "Matched Rule",
+                "Actions",
+                "Final Destination",
+                "Status",
+                "Details",
+            ]
+        )
+
+        self.preview_table.setEditTriggers(
+            QAbstractItemView.EditTrigger.NoEditTriggers
+        )
+        self.preview_table.setSelectionBehavior(
+            QAbstractItemView.SelectionBehavior.SelectRows
+        )
+        self.preview_table.setAlternatingRowColors(True)
+
+        header = self.preview_table.horizontalHeader()
+        header.setSectionResizeMode(
+            QHeaderView.ResizeMode.ResizeToContents
+        )
+        header.setStretchLastSection(True)
+
+        layout.addWidget(self.preview_table)
+
+        self.current_plans = []
+        self.quarantine_dir = None
+
+        return page
+
+    def build_preview(self):
+        folders = self.database.list_watched_folders()
+        rules = self.database.list_rules()
+
+        self.current_plans = []
+        self.preview_table.setRowCount(0)
+        self.execute_preview_button.setEnabled(False)
+
+        if not folders:
+            QMessageBox.information(
+                self,
+                "No Folders",
+                "Add a watched folder before building a preview.",
+            )
+            return
+
+        if not rules:
+            QMessageBox.information(
+                self,
+                "No Rules",
+                "Create at least one rule before building a preview.",
+            )
+            return
+
+        try:
+            # Create the configured quarantine path reference.
+            # This does not itself move any files.
+            self.quarantine_dir = default_quarantine_dir()
+
+            # Scan only the validated direct-child files.
+            files = scan_folders(
+                folders,
+                policy=self.policy,
+            )
+
+            # Build a read-only plan.
+            plans = plan_files(
+                files,
+                rules,
+                policy=self.policy,
+                quarantine_dir=self.quarantine_dir,
+            )
+
+        except Exception as exc:
+            QMessageBox.critical(
+                self,
+                "Preview Failed",
+                str(exc),
+            )
+            return
+
+        self.current_plans = plans
+        self.preview_table.setRowCount(len(plans))
+
+        for row, plan in enumerate(plans):
+            action_text = " -> ".join(
+                (
+                    f"{action.kind.value}: "
+                    f"{action.source.name} -> "
+                    f"{action.destination}"
+                )
+                for action in plan.actions
+            )
+
+            values = [
+                str(plan.source),
+                plan.rule_name or "-",
+                action_text or "-",
+                str(plan.final_path),
+                plan.status.value,
+                plan.reason or "",
+            ]
+
+            for column, value in enumerate(values):
+                self.preview_table.setItem(
+                    row,
+                    column,
+                    QTableWidgetItem(value),
+                )
+
+        executable_count = sum(
+            1
+            for plan in plans
+            if plan.status == PlanStatus.READY and plan.actions
+        )
+
+        self.execute_preview_button.setEnabled(
+            executable_count > 0
+        )
+
+        QMessageBox.information(
+            self,
+            "Preview Ready",
+            f"Files scanned: {len(files)}\n"
+            f"Plans created: {len(plans)}\n"
+            f"Executable plans: {executable_count}\n\n"
+            "Review the table before executing anything.",
+        )
+
+    def execute_preview(self):
+        plans = self.current_plans
+
+        executable_count = sum(
+            1
+            for plan in plans
+            if plan.status == PlanStatus.READY and plan.actions
+        )
+
+        if executable_count == 0:
+            QMessageBox.information(
+                self,
+                "Nothing to Execute",
+                "Build a fresh preview containing executable plans.",
+            )
+            return
+
+        answer = QMessageBox.warning(
+            self,
+            "Confirm File Operations",
+            f"Execute {executable_count} file plan(s)?\n\n"
+            "Files may be renamed, moved, copied or quarantined. "
+            "Review the preview and confirm only if it is correct.",
+            QMessageBox.StandardButton.Yes
+            | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+
+        self.execute_preview_button.setEnabled(False)
+
+        try:
+            results = execute_plans(
+                plans,
+                self.database,
+                confirmed=True,
+                policy=self.policy,
+                quarantine_dir=self.quarantine_dir,
+            )
+
+        except Exception as exc:
+            QMessageBox.critical(
+                self,
+                "Execution Failed",
+                str(exc),
+            )
+            return
+
+        succeeded = 0
+        failed = 0
+
+        for row, result in enumerate(results):
+            if result.status == "SUCCEEDED":
+                succeeded += 1
+            elif result.status not in {"NO_MATCH", "NO_OP"}:
+                failed += 1
+
+            self.preview_table.setItem(
+                row,
+                4,
+                QTableWidgetItem(result.status),
+            )
+
+            self.preview_table.setItem(
+                row,
+                5,
+                QTableWidgetItem(result.message or ""),
+            )
+
+        # An executed preview must not be reused.
+        self.current_plans = []
+
+        # Reload operation history from SQLite.
+        self.refresh_history()
+
+        QMessageBox.information(
+            self,
+            "Execution Finished",
+            f"Successful actions: {succeeded}\n"
+            f"Failed or review-required items: {failed}\n\n"
+            "Build a fresh preview before the next execution.",
+        )
+    
+    def _build_history_page(self):
+        page = QWidget()
+        layout = QVBoxLayout(page)
+
+        title = QLabel("Operation History")
+        title.setStyleSheet(
+            "font-size: 20px; font-weight: bold;"
+        )
+        layout.addWidget(title)
+
+        layout.addWidget(
+            QLabel(
+                "Review file operations recorded in the local SQLite journal."
+            )
+        )
+
+        self.history_table = QTableWidget(0, 7)
+
+        self.history_table.setHorizontalHeaderLabels(
+            [
+                "ID",
+                "Operation",
+                "Source",
+                "Destination",
+                "Status",
+                "Created At",
+                "Error / Details",
+            ]
+        )
+
+        self.history_table.setEditTriggers(
+            QAbstractItemView.EditTrigger.NoEditTriggers
+        )
+
+        self.history_table.setSelectionBehavior(
+            QAbstractItemView.SelectionBehavior.SelectRows
+        )
+
+        self.history_table.setAlternatingRowColors(True)
+
+        header = self.history_table.horizontalHeader()
+        header.setSectionResizeMode(
+            QHeaderView.ResizeMode.ResizeToContents
+        )
+        header.setStretchLastSection(True)
+
+        layout.addWidget(self.history_table)
+
+        self.refresh_history_button = QPushButton("Refresh History")
+        self.refresh_history_button.clicked.connect(
+            self.refresh_history
+        )
+
+        layout.addWidget(self.refresh_history_button)
+
+        return page
+
+
+    def refresh_history(self):
+        try:
+            operations = self.database.list_operations(limit=100)
+        except Exception as exc:
+            QMessageBox.critical(
+                self,
+                "History Error",
+                f"Could not load operation history:\n{exc}",
+            )
+            return
+
+        self.history_table.setRowCount(len(operations))
+
+        for row, operation in enumerate(operations):
+            values = [
+                operation.get("id", ""),
+                operation.get("operation_type", ""),
+                operation.get("source_path", ""),
+                operation.get("destination_path") or "-",
+                operation.get("status", ""),
+                operation.get("created_at", ""),
+                operation.get("error") or "-",
+            ]
+
+            for column, value in enumerate(values):
+                item = QTableWidgetItem(str(value))
+
+                self.history_table.setItem(
+                    row,
+                    column,
+                    item,
+                )
