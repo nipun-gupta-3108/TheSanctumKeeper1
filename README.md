@@ -1,10 +1,10 @@
 # The Sanctum Keeper
 
-**Offline, rule-based file organization — Backend Prototype**
+**Offline, rule-driven file organization for Windows**
 
-The Sanctum Keeper is a Python backend prototype that organizes files using user-defined rules. It supports read-only previews, explicit execution confirmation, file-operation verification, and a local SQLite operation journal.
+The Sanctum Keeper is a local desktop file organizer. Users select folders, define ordered rules, inspect a read-only preview of proposed file operations, and explicitly confirm execution. The application records attempted operations in a local SQLite journal.
 
-The prototype runs locally and does not use a remote API or cloud backend.
+The project is developed by **Team ObliqForge** for **Softablitz 2026**.
 
 ## Team
 
@@ -13,105 +13,154 @@ The prototype runs locally and does not use a remote API or cloud backend.
 - **Members:** Mohammad Yalnaaz and Nipun Gupta
 - **Event:** Softablitz 2026
 
-## Implemented Features
+## Current Features
 
-- Rule conditions based on filename, extension, file size, and file age.
-- Ordered rules with first-match-wins behavior.
-- Safe scanning of direct-child files in selected folders.
-- Filtering of temporary files such as `.part`, `.tmp`, and `.crdownload`.
-- Read-only planning and destination-conflict checks.
-- Rename, move, copy, and reversible quarantine file-operation primitives.
-- Explicit confirmation before executing a planned operation.
-- SHA-256 checks to verify file contents during supported operations.
-- SQLite persistence for watched folders, rules, and operation history.
-- Tests for rule matching, path safety, planning, file operations, persistence, and execution.
+### Desktop application
+
+- PySide6 desktop interface with **Folders**, **Rules**, **Preview**, and **History** tabs.
+- Add and remove up to three watched folders.
+- Validate selected folders and reject protected, root, and overlapping folder paths.
+- Persist watched-folder configuration and rules in SQLite.
+
+### Rule builder
+
+- Create and edit rules through a visual rule editor.
+- Conditions can inspect filename, extension, file size (bytes), and file age (days).
+- Multiple conditions in one rule are combined with AND semantics.
+- Supported text and numeric comparison operators are validated by the rule model.
+- Rules can be enabled or disabled, deleted, and reordered.
+- Enabled rules are evaluated in order; the first matching rule wins.
+
+### Preview and execution
+
+- Scan direct-child files in selected folders; scanning is non-recursive.
+- Ignore incomplete download files with `.part`, `.tmp`, and `.crdownload` suffixes.
+- Preview proposed rename, move, copy, and app-managed quarantine actions.
+- Show matched rule, planned actions, destination, status, and planning details.
+- Preview is read-only. No file mutation occurs while the plan is being built.
+- Require explicit user confirmation before executing a plan.
+- Revalidate file state before execution and avoid overwriting existing destinations.
+- Use SHA-256 verification in supported file operations.
+
+### Operation history
+
+- Record operation intents and outcomes in a local SQLite journal.
+- Display operation type, source, destination, status, timestamp, and error details.
+- Refresh the history view from the local database.
 
 ## Technology Stack
 
 - Python 3.11+
-- `pathlib`, `hashlib`, `shutil`, and other Python standard-library modules
-- SQLite through Python's built-in `sqlite3`
-- `unittest` for automated testing
+- PySide6 / Qt Widgets
+- SQLite through Python's built-in `sqlite3` module
+- Python standard library: `pathlib`, `hashlib`, `shutil`, and related modules
+- pytest for automated tests
 
-No frontend UI or external database server is required for the current prototype.
+The application does not require a remote API, cloud backend, or external database server.
 
 ## Setup
 
-Install Python 3.11 or later and open a terminal in the project directory.
+The current desktop application targets Windows 10/11.
 
-Check the installed Python version:
+1. Install Python 3.11 or later.
+2. Clone the repository and open a terminal in the project directory.
+3. Create and activate a virtual environment:
+
+   ```powershell
+   python -m venv .venv
+   .\.venv\Scripts\Activate.ps1
+   ```
+
+4. Install the project dependencies:
+
+   ```powershell
+   python -m pip install --upgrade pip
+   python -m pip install -r requirements.txt
+   ```
+
+## Run the Desktop Application
+
+From the repository root, with the virtual environment activated:
 
 ```powershell
-python --version
+python app.py
 ```
 
-No additional packages are needed for the current implementation.
+On Windows, the SQLite database is stored under:
+
+```text
+%LOCALAPPDATA%\TheSanctumKeeper\keeper.sqlite3
+```
+
+This keeps application data separate from the folders selected for organization.
 
 ## Run the Tests
 
 ```powershell
-python -m unittest discover -s tests -v
+python -m pytest
 ```
 
-The current test suite has passed **44 tests** in the development environment.
+## Run the Backend Demonstration
 
-## Run the End-to-End Demo
+The command-line demonstration creates an isolated temporary workspace and sample files. It scans the workspace, loads a saved rule, displays a read-only plan, asks for explicit confirmation, executes the sample operation, and verifies the resulting file and operation history.
 
 ```powershell
 python demo.py
 ```
 
-The demo creates an isolated temporary workspace containing sample files. It then:
+Type `YES` only when you want the temporary demonstration to execute its planned operation. Any other response cancels it. The temporary workspace is cleaned up when the demo exits.
 
-1. Scans the sample folder.
-2. Loads the saved rule from SQLite.
-3. Builds and displays a read-only plan.
-4. Requests explicit confirmation before execution.
-5. Renames and moves the matching file.
-6. Verifies the resulting file and displays operation history.
-
-Type `YES` when prompted to execute the demo plan. Any other response cancels execution.
-
-The demo uses temporary sample data and automatically cleans up its workspace when it exits.
-
-## How the Backend Works
+## Architecture Overview
 
 ```text
-Folder Scanner
+PySide6 Desktop UI
       |
-      v
-Rule Engine
+      +---- Folder selection and visual rule management
       |
-      v
-Read-only Planner
-      |
-      v
-Explicit Confirmation
-      |
-      v
-File Operations
-      |
-      v
-SQLite Operation Journal
+      +---- Read-only preview request
+                    |
+                    v
+              Folder Scanner
+                    |
+                    v
+                Rule Engine
+                    |
+                    v
+              Read-only Planner
+                    |
+             User confirmation
+                    |
+                    v
+                 Executor
+                    |
+                    v
+             Safe File Operations
+                    |
+                    v
+           SQLite Operation Journal
 ```
 
-The scanner discovers eligible files, the rule engine finds the first matching enabled rule, and the planner calculates proposed actions without modifying files. The executor rechecks important preconditions before applying the confirmed plan and records operation outcomes in SQLite.
+The GUI uses the existing scanner, rule engine, planner, executor, file-operation helpers, and SQLite database layer. The planner calculates proposed operations without performing filesystem mutations. The executor rechecks important preconditions before applying a confirmed plan and records operation outcomes.
 
-## Current Limitations
+## Current Limitations / Work in Progress
 
-This is an early backend prototype, not a production-ready desktop application.
+The following items are **not yet implemented in the current repository version**:
 
-- No graphical user interface is included.
-- Automatic background folder monitoring is not yet implemented.
-- Undo functionality is not yet implemented.
-- Advanced recovery of interrupted operations is not implemented.
-- The demo validates a specific workflow; it does not prove every possible filesystem scenario is safe.
+- Automatic background monitoring of watched folders for newly arriving files.
+- Undo controls and safe reversal of recorded operations.
+- Recovery classification for unfinished operations after an application restart.
+- Background worker integration for scanning and execution. These tasks currently run synchronously from the GUI, so large jobs may temporarily make the interface unresponsive.
+- PyInstaller packaging and a distributable Windows executable.
 
-These limitations will be addressed in future development.
+The current GUI supports explicit, user-triggered preview and execution. It does not automatically process new files in the background.
 
 ## Safety Notes
 
-Run demonstrations only against disposable sample data. Never use important personal folders for testing. Review the preview before confirming any file operation, and keep backups of important files.
+- Test only with disposable sample folders before using the application with personal data.
+- Review the preview carefully before confirming file operations.
+- Keep backups of important files.
+- Existing destinations are not intentionally overwritten.
+- The application is an evolving hackathon prototype, not yet a production-grade file management utility.
 
 ## License
 
